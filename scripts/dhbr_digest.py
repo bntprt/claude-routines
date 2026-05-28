@@ -182,8 +182,6 @@ def main() -> None:
             f"未投稿の人気記事が {SELECT_COUNT} 件未満のためスキップします "
             f"（未投稿: {len(unseen)} 件）"
         )
-        seen_urls.update(a["url"] for a in popular)
-        save_seen_urls(seen_urls)
         return
 
     selected = unseen[:SELECT_COUNT]
@@ -198,7 +196,8 @@ def main() -> None:
     post_to_slack(slack_client, results)
     print(f"Slack に投稿しました（{len(results)} 件）")
 
-    seen_urls.update(a["url"] for a in popular)
+    # 投稿した3件だけを既読にする（残りは翌日以降の候補として残す）
+    seen_urls.update(a["url"] for a in selected)
     save_seen_urls(seen_urls)
     print("既読リストを更新しました")
 
