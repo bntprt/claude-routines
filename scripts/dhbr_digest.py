@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""DHBR daily digest: fetch latest articles, pick 3 new ones, summarize, post to Slack."""
+"""DHBR daily digest: fetch popular articles, skip seen ones, summarize, post to Slack."""
 
 import json
 import os
 import sys
-import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 
@@ -16,7 +15,6 @@ from slack_sdk import WebClient
 DATA_FILE = Path(__file__).parent.parent / "data" / "seen_articles.json"
 SLACK_CHANNEL = "C0985BY63KM"  # #hbrまとめ
 DHBR_BASE = "https://dhbr.diamond.jp"
-FETCH_COUNT = 10
 SELECT_COUNT = 3
 
 
@@ -35,90 +33,83 @@ def save_seen_urls(urls: set) -> None:
     )
 
 
-def fetch_articles_from_rss() -> list[dict]:
-    """Try to get articles via RSS feed."""
-    for feed_path in ["/rss", "/feed", "/rss.xml", "/atom.xml"]:
-        try:
-            resp = requests.get(
-                DHBR_BASE + feed_path,
-                timeout=15,
-                headers={"User-Agent": "Mozilla/5.0"},
-            )
-            if resp.status_code != 200:
-                continue
-            root = ET.fromstring(resp.content)
-            ns = {"atom": "http://www.w3.org/2005/Atom"}
-            items = root.findall(".//item") or root.findall(".//atom:entry", ns)
-            articles = []
-            for item in items:
-                title_el = item.find("title") or item.find("atom:title", ns)
-                link_el = item.find("link") or item.find("atom:link", ns)
-                title = title_el.text.strip() if title_el is not None and title_el.text else ""
-                url = (
-                    link_el.text.strip()
-                    if link_el is not None and link_el.text
-                    else link_el.get("href", "") if link_el is not None else ""
-                )
-                if title and url:
-                    articles.append({"title": title, "url": url})
-            if articles:
-                return articles[:FETCH_COUNT]
-        except Exception:
-            continue
-    return []
+def _get_soup(path: str) -> BeautifulSoup | None:
+    try:
+        resp = requests.get(
+            DHBR_BASE + path,
+            timeout=15,
+            headers={"User-Agent": "Mozilla/5.0 (compatible)"},
+        )
+        resp.raise_for_status()
+        return BeautifulSoup(resp.text, "html.parser")
+    except Exception:
+        return None
 
 
-def fetch_articles_from_html() -> list[dict]:
-    """Scrape top page for article links."""
-    resp = requests.get(
-        DHBR_BASE,
-        timeout=15,
-        headers={"User-Agent": "Mozilla/5.0 (compatible)"},
-    )
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
-
+def _extract_links(soup: BeautifulSoup, seen: set) -> list[dict]:
+    """Extract article links from a BeautifulSoup object, deduplicating by URL."""
     articles = []
-    seen_urls: set[str] = set()
-
-    # Try common article link patterns
-    selectors = [
-        "a[href*='/articles/']",
-        "a[href*='/books/']",
-        ".article-list a",
-        ".news-list a",
-        "h2 a",
-        "h3 a",
-    ]
-    for sel in selectors:
-        for tag in soup.select(sel):
-            href = tag.get("href", "")
-            if not href:
-                continue
-            if href.startswith("/"):
-                href = DHBR_BASE + href
-            if not href.startswith(DHBR_BASE):
-                continue
-            title = tag.get_text(strip=True)
-            if len(title) < 10 or href in seen_urls:
-                continue
-            seen_urls.add(href)
-            articles.append({"title": title, "url": href})
-        if len(articles) >= FETCH_COUNT:
-            break
-
-    return articles[:FETCH_COUNT]
-
-
-def fetch_articles() -> list[dict]:
-    articles = fetch_articles_from_rss()
-    if not articles:
-        articles = fetch_articles_from_html()
+    for tag in soup.find_all("a", href=True):
+        href = tag["href"]
+        if href.startswith("/"):
+            href = DHBR_BASE + href
+        if not href.startswith(DHBR_BASE):
+            continue
+        title = tag.get_text(strip=True)
+        if len(title) < 10 or href in seen:
+            continue
+        seen.add(href)
+        articles.append({"title": title, "url": href})
     return articles
 
 
+def fetch_popular_articles() -> list[dict]:
+    """
+    Fetch popular articles from dhbr.diamond.jp.
+
+    Strategy (in priority order):
+    1. Dedicated ranking/popular page (/ranking, /popular, etc.)
+    2. Ranking / popular sections on the top page (identified by heading keywords)
+    3. Top-page general article links as last resort
+    """
+    seen_in_fetch: set[str] = set()
+
+    # 1. Try dedicated ranking pages
+    for path in ["/ranking", "/rankings", "/popular", "/hotarticles"]:
+        soup = _get_soup(path)
+        if soup is None:
+            continue
+        candidates = _extract_links(soup, seen_in_fetch)
+        if candidates:
+            print(f"  人気記事を {path} から取得しました")
+            return candidates[:20]
+
+    # 2. Scrape top page: look for sections whose heading contains ranking keywords
+    soup = _get_soup("/")
+    if soup is None:
+        print("トップページの取得に失敗しました", file=sys.stderr)
+        return []
+
+    ranking_keywords = ["人気", "ランキング", "ranking", "popular", "よく読まれ", "アクセス"]
+    for heading in soup.find_all(["h1", "h2", "h3", "h4"]):
+        text = heading.get_text(strip=True).lower()
+        if not any(kw in text for kw in ranking_keywords):
+            continue
+        # Gather links from the section following this heading
+        section = heading.find_parent(["section", "div", "article", "aside", "nav"])
+        if section is None:
+            continue
+        candidates = _extract_links(section, seen_in_fetch)
+        if candidates:
+            print(f"  人気記事セクション「{heading.get_text(strip=True)}」を検出しました")
+            return candidates[:20]
+
+    # 3. Fall back: all article links on the top page
+    print("  ランキングセクションが見つからなかったためトップページ全体を使用します")
+    return _extract_links(soup, seen_in_fetch)[:20]
+
+
 def fetch_article_body(url: str) -> str:
-    """Fetch main body text of an article page."""
     try:
         resp = requests.get(
             url,
@@ -137,7 +128,6 @@ def fetch_article_body(url: str) -> str:
 
 
 def summarize(client: anthropic.Anthropic, title: str, body: str) -> str:
-    """Return ~200-character Japanese summary using Claude."""
     content = f"タイトル: {title}\n\n本文:\n{body}" if body else f"タイトル: {title}"
     msg = client.messages.create(
         model="claude-haiku-4-5-20251001",
@@ -163,7 +153,7 @@ def post_to_slack(slack: WebClient, items: list[dict]) -> None:
             "type": "header",
             "text": {
                 "type": "plain_text",
-                "text": f"📚 DHBR 新着記事まとめ（{today}）",
+                "text": f"🏆 DHBR 人気記事まとめ（{today}）",
                 "emoji": True,
             },
         }
@@ -183,7 +173,7 @@ def post_to_slack(slack: WebClient, items: list[dict]) -> None:
     slack.chat_postMessage(
         channel=SLACK_CHANNEL,
         blocks=blocks,
-        text=f"DHBR 新着記事まとめ（{today}）",
+        text=f"DHBR 人気記事まとめ（{today}）",
         unfurl_links=False,
     )
 
@@ -197,28 +187,28 @@ def main() -> None:
 
     seen_urls = load_seen_urls()
 
-    print("記事を取得中...")
-    articles = fetch_articles()
-    if not articles:
+    print("人気記事を取得中...")
+    popular = fetch_popular_articles()
+    if not popular:
         print("記事の取得に失敗しました", file=sys.stderr)
         sys.exit(1)
 
-    print(f"取得: {len(articles)} 件")
+    print(f"取得: {len(popular)} 件")
 
-    new_articles = [a for a in articles if a["url"] not in seen_urls]
-    print(f"新規: {len(new_articles)} 件（既読除外後）")
+    # 重複（過去に投稿済み）を除外
+    unseen = [a for a in popular if a["url"] not in seen_urls]
+    print(f"未投稿: {len(unseen)} 件（投稿済み除外後）")
 
-    if len(new_articles) < SELECT_COUNT:
+    if len(unseen) < SELECT_COUNT:
         print(
-            f"新規記事が {SELECT_COUNT} 件未満のため投稿をスキップします "
-            f"（新規: {len(new_articles)} 件）"
+            f"未投稿の人気記事が {SELECT_COUNT} 件未満のため投稿をスキップします "
+            f"（未投稿: {len(unseen)} 件）"
         )
-        # Still mark all fetched as seen
-        seen_urls.update(a["url"] for a in articles)
+        seen_urls.update(a["url"] for a in popular)
         save_seen_urls(seen_urls)
         return
 
-    selected = new_articles[:SELECT_COUNT]
+    selected = unseen[:SELECT_COUNT]
     claude_client = anthropic.Anthropic(api_key=anthropic_key)
     slack_client = WebClient(token=slack_token)
 
@@ -232,7 +222,8 @@ def main() -> None:
     post_to_slack(slack_client, results)
     print(f"Slack に投稿しました（{len(results)} 件）")
 
-    seen_urls.update(a["url"] for a in articles)
+    # 今回取得した全 URL を既読に追加
+    seen_urls.update(a["url"] for a in popular)
     save_seen_urls(seen_urls)
     print("既読リストを更新しました")
 
