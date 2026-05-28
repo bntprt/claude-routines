@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DHBR daily digest: fetch popular articles, skip seen ones, summarize, post to Slack."""
+"""DHBR daily digest: fetch popular articles, skip seen ones, post to Slack."""
 
 import json
 import os
@@ -7,7 +7,6 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-import anthropic
 import requests
 from bs4 import BeautifulSoup
 from slack_sdk import WebClient
@@ -47,7 +46,6 @@ def _get_soup(path: str) -> BeautifulSoup | None:
 
 
 def _extract_links(soup: BeautifulSoup, seen: set) -> list[dict]:
-    """Extract article links from a BeautifulSoup object, deduplicating by URL."""
     articles = []
     for tag in soup.find_all("a", href=True):
         href = tag["href"]
@@ -64,17 +62,9 @@ def _extract_links(soup: BeautifulSoup, seen: set) -> list[dict]:
 
 
 def fetch_popular_articles() -> list[dict]:
-    """
-    Fetch popular articles from dhbr.diamond.jp.
-
-    Strategy (in priority order):
-    1. Dedicated ranking/popular page (/ranking, /popular, etc.)
-    2. Ranking / popular sections on the top page (identified by heading keywords)
-    3. Top-page general article links as last resort
-    """
     seen_in_fetch: set[str] = set()
 
-    # 1. Try dedicated ranking pages
+    # 1. 専用ランキングページを試す
     for path in ["/ranking", "/rankings", "/popular", "/hotarticles"]:
         soup = _get_soup(path)
         if soup is None:
@@ -84,7 +74,7 @@ def fetch_popular_articles() -> list[dict]:
             print(f"  人気記事を {path} から取得しました")
             return candidates[:20]
 
-    # 2. Scrape top page: look for sections whose heading contains ranking keywords
+    # 2. トップページの人気・ランキングセクションを探す
     soup = _get_soup("/")
     if soup is None:
         print("トップページの取得に失敗しました", file=sys.stderr)
@@ -95,7 +85,6 @@ def fetch_popular_articles() -> list[dict]:
         text = heading.get_text(strip=True).lower()
         if not any(kw in text for kw in ranking_keywords):
             continue
-        # Gather links from the section following this heading
         section = heading.find_parent(["section", "div", "article", "aside", "nav"])
         if section is None:
             continue
@@ -104,12 +93,13 @@ def fetch_popular_articles() -> list[dict]:
             print(f"  人気記事セクション「{heading.get_text(strip=True)}」を検出しました")
             return candidates[:20]
 
-    # 3. Fall back: all article links on the top page
+    # 3. フォールバック: トップページ全体
     print("  ランキングセクションが見つからなかったためトップページ全体を使用します")
     return _extract_links(soup, seen_in_fetch)[:20]
 
 
-def fetch_article_body(url: str) -> str:
+def fetch_description(url: str) -> str:
+    """記事ページの meta description を取得する。なければ本文冒頭を返す。"""
     try:
         resp = requests.get(
             url,
@@ -118,32 +108,27 @@ def fetch_article_body(url: str) -> str:
         )
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
-        for sel in ["article", ".article-body", ".entry-content", "main", ".content"]:
+
+        # og:description → description → 本文冒頭の順で試す
+        for attr in [
+            {"property": "og:description"},
+            {"name": "description"},
+            {"name": "twitter:description"},
+        ]:
+            tag = soup.find("meta", attrs=attr)
+            if tag and tag.get("content", "").strip():
+                return tag["content"].strip()
+
+        # メタ説明がなければ本文最初の段落
+        for sel in ["article", ".article-body", ".entry-content", "main"]:
             el = soup.select_one(sel)
             if el:
-                return el.get_text(separator="\n", strip=True)[:4000]
-        return soup.get_text(separator="\n", strip=True)[:4000]
+                para = el.find("p")
+                if para:
+                    return para.get_text(strip=True)[:200]
     except Exception:
-        return ""
-
-
-def summarize(client: anthropic.Anthropic, title: str, body: str) -> str:
-    content = f"タイトル: {title}\n\n本文:\n{body}" if body else f"タイトル: {title}"
-    msg = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=400,
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    "以下の記事を日本語で200字程度に要約してください。"
-                    "要約文のみを出力し、前置き・後書き・見出しは不要です。\n\n"
-                    + content
-                ),
-            }
-        ],
-    )
-    return msg.content[0].text.strip()
+        pass
+    return ""
 
 
 def post_to_slack(slack: WebClient, items: list[dict]) -> None:
@@ -160,15 +145,10 @@ def post_to_slack(slack: WebClient, items: list[dict]) -> None:
     ]
     for i, art in enumerate(items, 1):
         blocks.append({"type": "divider"})
-        blocks.append(
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"*{i}. <{art['url']}|{art['title']}>*\n{art['summary']}",
-                },
-            }
-        )
+        body_text = f"*{i}. <{art['url']}|{art['title']}>*"
+        if art.get("description"):
+            body_text += f"\n{art['description']}"
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": body_text}})
 
     slack.chat_postMessage(
         channel=SLACK_CHANNEL,
@@ -179,10 +159,9 @@ def post_to_slack(slack: WebClient, items: list[dict]) -> None:
 
 
 def main() -> None:
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
     slack_token = os.environ.get("SLACK_BOT_TOKEN", "")
-    if not anthropic_key or not slack_token:
-        print("ANTHROPIC_API_KEY と SLACK_BOT_TOKEN の両方が必要です", file=sys.stderr)
+    if not slack_token:
+        print("SLACK_BOT_TOKEN が設定されていません", file=sys.stderr)
         sys.exit(1)
 
     seen_urls = load_seen_urls()
@@ -195,13 +174,12 @@ def main() -> None:
 
     print(f"取得: {len(popular)} 件")
 
-    # 重複（過去に投稿済み）を除外
     unseen = [a for a in popular if a["url"] not in seen_urls]
     print(f"未投稿: {len(unseen)} 件（投稿済み除外後）")
 
     if len(unseen) < SELECT_COUNT:
         print(
-            f"未投稿の人気記事が {SELECT_COUNT} 件未満のため投稿をスキップします "
+            f"未投稿の人気記事が {SELECT_COUNT} 件未満のためスキップします "
             f"（未投稿: {len(unseen)} 件）"
         )
         seen_urls.update(a["url"] for a in popular)
@@ -209,20 +187,17 @@ def main() -> None:
         return
 
     selected = unseen[:SELECT_COUNT]
-    claude_client = anthropic.Anthropic(api_key=anthropic_key)
     slack_client = WebClient(token=slack_token)
 
     results = []
     for art in selected:
-        print(f"  要約中: {art['title'][:40]}...")
-        body = fetch_article_body(art["url"])
-        summary = summarize(claude_client, art["title"], body)
-        results.append({**art, "summary": summary})
+        print(f"  説明文を取得中: {art['title'][:40]}...")
+        desc = fetch_description(art["url"])
+        results.append({**art, "description": desc})
 
     post_to_slack(slack_client, results)
     print(f"Slack に投稿しました（{len(results)} 件）")
 
-    # 今回取得した全 URL を既読に追加
     seen_urls.update(a["url"] for a in popular)
     save_seen_urls(seen_urls)
     print("既読リストを更新しました")
