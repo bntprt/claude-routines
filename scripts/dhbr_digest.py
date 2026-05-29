@@ -4,7 +4,7 @@
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import requests
@@ -15,19 +15,33 @@ DATA_FILE = Path(__file__).parent.parent / "data" / "seen_articles.json"
 SLACK_CHANNEL = "C0985BY63KM"  # #hbrまとめ
 DHBR_BASE = "https://dhbr.diamond.jp"
 SELECT_COUNT = 3
+EXPIRE_DAYS = 30  # この日数を過ぎたら再投稿OK
 
 
-def load_seen_urls() -> set:
-    if DATA_FILE.exists():
-        data = json.loads(DATA_FILE.read_text(encoding="utf-8"))
-        return set(data.get("urls", []))
-    return set()
+def load_seen_data() -> dict[str, str]:
+    """既読データを読み込み、有効期限切れエントリを除外して返す。{url: "YYYY-MM-DD"}"""
+    if not DATA_FILE.exists():
+        return {}
+    raw = json.loads(DATA_FILE.read_text(encoding="utf-8"))
+
+    # 旧フォーマット（urls リスト）の場合は空扱いにしてリセット
+    if isinstance(raw.get("articles"), dict):
+        articles = raw["articles"]
+    else:
+        return {}
+
+    cutoff = date.today() - timedelta(days=EXPIRE_DAYS)
+    return {
+        url: seen_on
+        for url, seen_on in articles.items()
+        if date.fromisoformat(seen_on) >= cutoff
+    }
 
 
-def save_seen_urls(urls: set) -> None:
+def save_seen_data(data: dict[str, str]) -> None:
     DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
     DATA_FILE.write_text(
-        json.dumps({"urls": sorted(urls)}, ensure_ascii=False, indent=2),
+        json.dumps({"articles": data}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
@@ -99,7 +113,6 @@ def fetch_popular_articles() -> list[dict]:
 
 
 def fetch_description(url: str) -> str:
-    """記事ページの meta description を取得する。なければ本文冒頭を返す。"""
     try:
         resp = requests.get(
             url,
@@ -109,7 +122,6 @@ def fetch_description(url: str) -> str:
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        # og:description → description → 本文冒頭の順で試す
         for attr in [
             {"property": "og:description"},
             {"name": "description"},
@@ -119,7 +131,6 @@ def fetch_description(url: str) -> str:
             if tag and tag.get("content", "").strip():
                 return tag["content"].strip()
 
-        # メタ説明がなければ本文最初の段落
         for sel in ["article", ".article-body", ".entry-content", "main"]:
             el = soup.select_one(sel)
             if el:
@@ -164,7 +175,9 @@ def main() -> None:
         print("SLACK_BOT_TOKEN が設定されていません", file=sys.stderr)
         sys.exit(1)
 
-    seen_urls = load_seen_urls()
+    seen_data = load_seen_data()
+    seen_urls = set(seen_data.keys())
+    print(f"既読: {len(seen_urls)} 件（{EXPIRE_DAYS}日以内）")
 
     print("人気記事を取得中...")
     popular = fetch_popular_articles()
@@ -175,7 +188,7 @@ def main() -> None:
     print(f"取得: {len(popular)} 件")
 
     unseen = [a for a in popular if a["url"] not in seen_urls]
-    print(f"未投稿: {len(unseen)} 件（投稿済み除外後）")
+    print(f"未投稿: {len(unseen)} 件（既読除外後）")
 
     if len(unseen) < SELECT_COUNT:
         print(
@@ -196,10 +209,12 @@ def main() -> None:
     post_to_slack(slack_client, results)
     print(f"Slack に投稿しました（{len(results)} 件）")
 
-    # 投稿した3件だけを既読にする（残りは翌日以降の候補として残す）
-    seen_urls.update(a["url"] for a in selected)
-    save_seen_urls(seen_urls)
-    print("既読リストを更新しました")
+    # 投稿した3件を本日付で既読に追加（30日後に自動失効）
+    today_str = date.today().isoformat()
+    for art in selected:
+        seen_data[art["url"]] = today_str
+    save_seen_data(seen_data)
+    print(f"既読リストを更新しました（計 {len(seen_data)} 件）")
 
 
 if __name__ == "__main__":
