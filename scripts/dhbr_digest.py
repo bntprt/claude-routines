@@ -4,8 +4,10 @@
 import json
 import os
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+
+JST = timezone(timedelta(hours=9))
 
 import requests
 from bs4 import BeautifulSoup
@@ -143,7 +145,7 @@ def fetch_description(url: str) -> str:
 
 
 def post_to_slack(slack: WebClient, items: list[dict]) -> None:
-    today = datetime.now().strftime("%Y年%m月%d日")
+    today = datetime.now(JST).strftime("%Y年%m月%d日")
     blocks: list[dict] = [
         {
             "type": "header",
@@ -210,7 +212,7 @@ def main() -> None:
     print(f"Slack に投稿しました（{len(results)} 件）")
 
     # 投稿した3件を本日付で既読に追加（30日後に自動失効）
-    today_str = date.today().isoformat()
+    today_str = datetime.now(JST).date().isoformat()
     for art in selected:
         seen_data[art["url"]] = today_str
     save_seen_data(seen_data)
