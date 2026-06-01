@@ -78,7 +78,7 @@ def _extract_links(soup: BeautifulSoup, seen: set) -> list[dict]:
 
 
 def fetch_popular_articles() -> list[dict]:
-    """人気記事を複数ソースから集めて返す（上位ほど人気優先）。"""
+    """人気記事を複数ソースから集めて返す。ランキング7件程度しかないため必ずトップ全体も取得する。"""
     seen_in_fetch: set[str] = set()
     results: list[dict] = []
 
@@ -93,11 +93,11 @@ def fetch_popular_articles() -> list[dict]:
             results.extend(candidates)
             break
 
-    # 2. トップページ（人気セクション優先、なければ全体）
+    # 2. トップページ: ランキングセクション + ページ全体の両方を取得
     soup = _get_soup("/")
     if soup is not None:
+        # 2a. ランキングセクション（存在すれば先頭に追加）
         ranking_keywords = ["人気", "ランキング", "ranking", "popular", "よく読まれ", "アクセス"]
-        section_found = False
         for heading in soup.find_all(["h1", "h2", "h3", "h4"]):
             text = heading.get_text(strip=True).lower()
             if not any(kw in text for kw in ranking_keywords):
@@ -107,20 +107,21 @@ def fetch_popular_articles() -> list[dict]:
                 continue
             candidates = _extract_links(section, seen_in_fetch)
             if candidates:
-                print(f"  トップページ人気セクション「{heading.get_text(strip=True)}」から {len(candidates)} 件取得")
+                print(f"  ランキングセクション「{heading.get_text(strip=True)}」から {len(candidates)} 件取得")
                 results.extend(candidates)
-                section_found = True
                 break
-        if not section_found:
-            candidates = _extract_links(soup, seen_in_fetch)
-            print(f"  トップページ全体から {len(candidates)} 件取得")
-            results.extend(candidates)
+
+        # 2b. トップページ全体（ランキングが少ない場合の補完として常に実行）
+        all_links = _extract_links(soup, seen_in_fetch)
+        if all_links:
+            print(f"  トップページ全体から追加 {len(all_links)} 件取得")
+            results.extend(all_links)
     else:
         print("トップページの取得に失敗しました", file=sys.stderr)
 
-    # 3. 補完: 記事一覧・新着ページ（上記で不足する場合に備えて追加取得）
+    # 3. 補完: 記事一覧ページ
     for path in ["/articles", "/articles/new", "/articles/latest", "/new", "/latest"]:
-        if len(results) >= 30:
+        if len(results) >= 40:
             break
         soup = _get_soup(path)
         if soup is None:
