@@ -17,7 +17,7 @@ DATA_FILE = Path(__file__).parent.parent / "data" / "seen_articles.json"
 SLACK_CHANNEL = "C0985BY63KM"  # #hbrまとめ
 DHBR_BASE = "https://dhbr.diamond.jp"
 SELECT_COUNT = 3
-EXPIRE_DAYS = 30  # この日数を過ぎたら再投稿OK
+EXPIRE_DAYS = 7  # この日数を過ぎたら再投稿OK
 
 
 def load_seen_data() -> dict[str, str]:
@@ -78,40 +78,60 @@ def _extract_links(soup: BeautifulSoup, seen: set) -> list[dict]:
 
 
 def fetch_popular_articles() -> list[dict]:
+    """人気記事を複数ソースから集めて返す（上位ほど人気優先）。"""
     seen_in_fetch: set[str] = set()
+    results: list[dict] = []
 
-    # 1. 専用ランキングページを試す
+    # 1. 専用ランキングページ
     for path in ["/ranking", "/rankings", "/popular", "/hotarticles"]:
         soup = _get_soup(path)
         if soup is None:
             continue
         candidates = _extract_links(soup, seen_in_fetch)
         if candidates:
-            print(f"  人気記事を {path} から取得しました")
-            return candidates[:20]
+            print(f"  ランキングページ {path} から {len(candidates)} 件取得")
+            results.extend(candidates)
+            break
 
-    # 2. トップページの人気・ランキングセクションを探す
+    # 2. トップページ（人気セクション優先、なければ全体）
     soup = _get_soup("/")
-    if soup is None:
+    if soup is not None:
+        ranking_keywords = ["人気", "ランキング", "ranking", "popular", "よく読まれ", "アクセス"]
+        section_found = False
+        for heading in soup.find_all(["h1", "h2", "h3", "h4"]):
+            text = heading.get_text(strip=True).lower()
+            if not any(kw in text for kw in ranking_keywords):
+                continue
+            section = heading.find_parent(["section", "div", "article", "aside", "nav"])
+            if section is None:
+                continue
+            candidates = _extract_links(section, seen_in_fetch)
+            if candidates:
+                print(f"  トップページ人気セクション「{heading.get_text(strip=True)}」から {len(candidates)} 件取得")
+                results.extend(candidates)
+                section_found = True
+                break
+        if not section_found:
+            candidates = _extract_links(soup, seen_in_fetch)
+            print(f"  トップページ全体から {len(candidates)} 件取得")
+            results.extend(candidates)
+    else:
         print("トップページの取得に失敗しました", file=sys.stderr)
-        return []
 
-    ranking_keywords = ["人気", "ランキング", "ranking", "popular", "よく読まれ", "アクセス"]
-    for heading in soup.find_all(["h1", "h2", "h3", "h4"]):
-        text = heading.get_text(strip=True).lower()
-        if not any(kw in text for kw in ranking_keywords):
+    # 3. 補完: 記事一覧・新着ページ（上記で不足する場合に備えて追加取得）
+    for path in ["/articles", "/articles/new", "/articles/latest", "/new", "/latest"]:
+        if len(results) >= 30:
+            break
+        soup = _get_soup(path)
+        if soup is None:
             continue
-        section = heading.find_parent(["section", "div", "article", "aside", "nav"])
-        if section is None:
-            continue
-        candidates = _extract_links(section, seen_in_fetch)
+        candidates = _extract_links(soup, seen_in_fetch)
         if candidates:
-            print(f"  人気記事セクション「{heading.get_text(strip=True)}」を検出しました")
-            return candidates[:20]
+            print(f"  補完ページ {path} から {len(candidates)} 件追加取得")
+            results.extend(candidates)
 
-    # 3. フォールバック: トップページ全体
-    print("  ランキングセクションが見つからなかったためトップページ全体を使用します")
-    return _extract_links(soup, seen_in_fetch)[:20]
+    print(f"  合計取得: {len(results)} 件")
+    return results[:40]
 
 
 def fetch_description(url: str) -> str:
@@ -211,7 +231,7 @@ def main() -> None:
     post_to_slack(slack_client, results)
     print(f"Slack に投稿しました（{len(results)} 件）")
 
-    # 投稿した3件を本日付で既読に追加（30日後に自動失効）
+    # 投稿した3件を本日付で既読に追加（7日後に自動失効）
     today_str = datetime.now(JST).date().isoformat()
     for art in selected:
         seen_data[art["url"]] = today_str
