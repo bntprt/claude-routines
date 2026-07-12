@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""日刊薬業（nk.jiho.jp）新着記事ダイジェスト: 新着を取得し、未投稿3件を200字要約してSlackへ投稿する。"""
+"""薬剤ニュースダイジェスト: 日刊薬業（nk.jiho.jp）と PHARMACY NEWSBREAK（pnb.jiho.jp）の
+新着記事を取得し、未投稿3件を200字要約してSlackへ投稿する。"""
 
 import json
 import os
@@ -16,10 +17,14 @@ JST = timezone(timedelta(hours=9))
 
 DATA_FILE = Path(__file__).parent.parent / "data" / "pharmacy_seen_articles.json"
 SLACK_CHANNEL = "C0BFUN7AJHJ"  # #薬剤ニュース
-NK_BASE = "https://nk.jiho.jp"
 SELECT_COUNT = 3
 EXPIRE_DAYS = 14  # この日数を過ぎたら既読リストから自動削除
 SUMMARY_LENGTH = 200
+
+SOURCES = [
+    {"name": "日刊薬業", "base": "https://nk.jiho.jp"},
+    {"name": "PHARMACY NEWSBREAK", "base": "https://pnb.jiho.jp"},
+]
 
 REQUEST_HEADERS = {
     "User-Agent": (
@@ -69,22 +74,22 @@ def _get_soup(url: str) -> BeautifulSoup | None:
         return None
 
 
-def _normalize_url(href: str) -> str | None:
+def _normalize_url(href: str, base: str) -> str | None:
     if href.startswith("/"):
-        href = NK_BASE + href
-    if not href.startswith(NK_BASE):
+        href = base + href
+    if not href.startswith(base):
         return None
     return href.split("#")[0].split("?")[0]
 
 
-def _extract_articles(soup: BeautifulSoup, seen_in_fetch: set) -> list[dict]:
+def _extract_articles(soup: BeautifulSoup, base: str, seen_in_fetch: set) -> list[dict]:
     """ページ内のリンクから記事候補を抽出する。/article/ 形式のURLを優先する。"""
     primary: list[dict] = []   # 記事URLパターンに一致
     secondary: list[dict] = []  # その他の内部リンク（タイトルが記事らしいもの）
 
     for tag in soup.find_all("a", href=True):
-        url = _normalize_url(tag["href"])
-        if url is None or url in seen_in_fetch or url.rstrip("/") == NK_BASE:
+        url = _normalize_url(tag["href"], base)
+        if url is None or url in seen_in_fetch or url.rstrip("/") == base:
             continue
         title = tag.get_text(" ", strip=True)
         if len(title) < 12:
@@ -101,33 +106,45 @@ def _extract_articles(soup: BeautifulSoup, seen_in_fetch: set) -> list[dict]:
     return primary + secondary
 
 
-def fetch_new_articles() -> list[dict]:
-    """トップページと新着系ページから記事候補を収集する。"""
+def fetch_new_articles(source: dict) -> list[dict]:
+    """指定サイトのトップページと新着系ページから記事候補を収集する。"""
+    base = source["base"]
     seen_in_fetch: set[str] = set()
     results: list[dict] = []
 
-    soup = _get_soup(NK_BASE + "/")
+    soup = _get_soup(base + "/")
     if soup is not None:
-        found = _extract_articles(soup, seen_in_fetch)
-        print(f"  トップページから {len(found)} 件取得")
+        found = _extract_articles(soup, base, seen_in_fetch)
+        print(f"  [{source['name']}] トップページから {len(found)} 件取得")
         results.extend(found)
     else:
-        print("トップページの取得に失敗しました", file=sys.stderr)
+        print(f"[{source['name']}] トップページの取得に失敗しました", file=sys.stderr)
 
     # 新着一覧らしきページを補完として試す
     for path in ["/list/latest", "/latest", "/new", "/news", "/article"]:
         if len(results) >= 30:
             break
-        soup = _get_soup(NK_BASE + path)
+        soup = _get_soup(base + path)
         if soup is None:
             continue
-        found = _extract_articles(soup, seen_in_fetch)
+        found = _extract_articles(soup, base, seen_in_fetch)
         if found:
-            print(f"  {path} から追加 {len(found)} 件取得")
+            print(f"  [{source['name']}] {path} から追加 {len(found)} 件取得")
             results.extend(found)
 
-    print(f"  合計取得: {len(results)} 件")
-    return results[:30]
+    print(f"  [{source['name']}] 合計取得: {len(results)} 件")
+    return [{**a, "source": source["name"]} for a in results[:30]]
+
+
+def interleave_sources(per_source: list[list[dict]]) -> list[dict]:
+    """各サイトの記事を交互に並べ、投稿がどちらかのサイトに偏らないようにする。"""
+    merged: list[dict] = []
+    max_len = max((len(lst) for lst in per_source), default=0)
+    for i in range(max_len):
+        for lst in per_source:
+            if i < len(lst):
+                merged.append(lst[i])
+    return merged
 
 
 def fetch_article_text(url: str) -> str:
@@ -199,7 +216,7 @@ def post_to_slack(slack: WebClient, items: list[dict]) -> None:
             "type": "header",
             "text": {
                 "type": "plain_text",
-                "text": f"💊 日刊薬業 新着ニュース（{today}）",
+                "text": f"💊 薬剤ニュースまとめ（{today}）",
                 "emoji": True,
             },
         }
@@ -207,6 +224,8 @@ def post_to_slack(slack: WebClient, items: list[dict]) -> None:
     for i, art in enumerate(items, 1):
         blocks.append({"type": "divider"})
         body_text = f"*{i}. <{art['url']}|{art['title']}>*"
+        if art.get("source"):
+            body_text += f"　`{art['source']}`"
         if art.get("summary"):
             body_text += f"\n{art['summary']}"
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": body_text}})
@@ -214,7 +233,7 @@ def post_to_slack(slack: WebClient, items: list[dict]) -> None:
     slack.chat_postMessage(
         channel=SLACK_CHANNEL,
         blocks=blocks,
-        text=f"日刊薬業 新着ニュース（{today}）",
+        text=f"薬剤ニュースまとめ（{today}）",
         unfurl_links=False,
     )
 
@@ -238,12 +257,18 @@ def main() -> None:
     print(f"既読: {len(seen_urls)} 件（{EXPIRE_DAYS}日以内）")
 
     print("新着記事を取得中...")
-    articles = fetch_new_articles()
-    if not articles:
+    per_source_unseen: list[list[dict]] = []
+    total_fetched = 0
+    for source in SOURCES:
+        articles = fetch_new_articles(source)
+        total_fetched += len(articles)
+        per_source_unseen.append([a for a in articles if a["url"] not in seen_urls])
+
+    if total_fetched == 0:
         print("記事の取得に失敗しました", file=sys.stderr)
         sys.exit(1)
 
-    unseen = [a for a in articles if a["url"] not in seen_urls]
+    unseen = interleave_sources(per_source_unseen)
     print(f"未投稿: {len(unseen)} 件（既読除外後）")
 
     if not unseen:
@@ -254,7 +279,7 @@ def main() -> None:
 
     results = []
     for art in selected:
-        print(f"  要約中: {art['title'][:40]}...")
+        print(f"  要約中: [{art['source']}] {art['title'][:40]}...")
         body = fetch_article_text(art["url"])
         summary = summarize(anthropic_client, art["title"], body)
         results.append({**art, "summary": summary})

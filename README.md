@@ -2,17 +2,18 @@
 
 Claude Code で動かす自動化ルーティン集。
 
-## Pharmacy News Daily（日刊薬業）
+## Pharmacy News Daily（日刊薬業・PHARMACY NEWSBREAK）
 
-毎朝 6:00 JST に [日刊薬業（nk.jiho.jp）](https://nk.jiho.jp/) の新着記事を取得し、
+毎朝 6:00 JST に [日刊薬業（nk.jiho.jp）](https://nk.jiho.jp/) と
+[PHARMACY NEWSBREAK（pnb.jiho.jp）](https://pnb.jiho.jp/) の新着記事を取得し、
 未投稿の記事から 3 件を選んで約 200 字に要約し、Slack の `#薬剤ニュース` チャンネルへ投稿します。
 GitHub Actions 上で動くため、**PC やデスクトップアプリが起動していなくても実行されます**。
 
 ### 動作概要
 
-1. nk.jiho.jp のトップページ・新着一覧から記事リンクを収集
+1. nk.jiho.jp / pnb.jiho.jp のトップページ・新着一覧から記事リンクを収集
 2. `data/pharmacy_seen_articles.json` と照合して未投稿の記事に絞る（重複排除、14 日で失効）
-3. 先頭 3 件を Claude API（Haiku）で約 200 字に要約
+3. 両サイトの記事を交互に並べて先頭 3 件を選び、Claude API（Haiku）で約 200 字に要約
    （`ANTHROPIC_API_KEY` 未設定時は記事リード文の抜粋で代替）
 4. Slack `#薬剤ニュース` チャンネルへ投稿
 5. 投稿済み URL を `data/pharmacy_seen_articles.json` に保存して main へコミット
