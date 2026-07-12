@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """薬剤ニュースダイジェスト: 日刊薬業（nk.jiho.jp）と PHARMACY NEWSBREAK（pnb.jiho.jp）の
-新着記事を取得し、未投稿3件を200字要約してSlackへ投稿する。"""
+新着記事を各3件選び、200字要約してSlackへ投稿する。両サイトで同じ話題は重複させない。"""
 
 import json
 import os
@@ -17,9 +17,10 @@ JST = timezone(timedelta(hours=9))
 
 DATA_FILE = Path(__file__).parent.parent / "data" / "pharmacy_seen_articles.json"
 SLACK_CHANNEL = "C0BFUN7AJHJ"  # #薬剤ニュース
-SELECT_COUNT = 3
+SELECT_PER_SOURCE = 3  # 各サイトから選ぶ件数
 EXPIRE_DAYS = 14  # この日数を過ぎたら既読リストから自動削除
 SUMMARY_LENGTH = 200
+SIMILARITY_THRESHOLD = 0.55  # タイトルの文字バイグラム一致率がこれ以上なら同じ話題とみなす
 
 SOURCES = [
     {"name": "日刊薬業", "base": "https://nk.jiho.jp"},
@@ -136,15 +137,45 @@ def fetch_new_articles(source: dict) -> list[dict]:
     return [{**a, "source": source["name"]} for a in results[:30]]
 
 
-def interleave_sources(per_source: list[list[dict]]) -> list[dict]:
-    """各サイトの記事を交互に並べ、投稿がどちらかのサイトに偏らないようにする。"""
-    merged: list[dict] = []
-    max_len = max((len(lst) for lst in per_source), default=0)
-    for i in range(max_len):
-        for lst in per_source:
-            if i < len(lst):
-                merged.append(lst[i])
-    return merged
+def _title_bigrams(title: str) -> set[str]:
+    normalized = re.sub(r"[\s　、。・「」【】（）()\[\]〔〕=＝\-—…:：;；!！?？]", "", title)
+    return {normalized[i : i + 2] for i in range(len(normalized) - 1)}
+
+
+def is_same_topic(title_a: str, title_b: str) -> bool:
+    """タイトルの文字バイグラム一致率で同じ話題かどうかを判定する。
+
+    片方のタイトルだけが長い（続報で詳細が付くなど）場合も検出できるよう、
+    短い方のタイトルに対する一致率（overlap係数）を使う。
+    """
+    a, b = _title_bigrams(title_a), _title_bigrams(title_b)
+    if not a or not b:
+        return False
+    overlap = len(a & b) / min(len(a), len(b))
+    return overlap >= SIMILARITY_THRESHOLD
+
+
+def select_articles(per_source_unseen: list[list[dict]]) -> tuple[list[dict], list[dict]]:
+    """各サイトから最大3件を選ぶ。すでに選んだ記事と同じ話題はスキップして次の記事を採用する。
+
+    戻り値: (選ばれた記事, 同話題としてスキップした記事)
+    """
+    selected: list[dict] = []
+    skipped_duplicates: list[dict] = []
+
+    for candidates in per_source_unseen:
+        picked_count = 0
+        for art in candidates:
+            if picked_count >= SELECT_PER_SOURCE:
+                break
+            if any(is_same_topic(art["title"], s["title"]) for s in selected):
+                print(f"  重複話題スキップ: [{art['source']}] {art['title'][:40]}")
+                skipped_duplicates.append(art)
+                continue
+            selected.append(art)
+            picked_count += 1
+
+    return selected, skipped_duplicates
 
 
 def fetch_article_text(url: str) -> str:
@@ -221,14 +252,25 @@ def post_to_slack(slack: WebClient, items: list[dict]) -> None:
             },
         }
     ]
-    for i, art in enumerate(items, 1):
+
+    for source in SOURCES:
+        source_items = [a for a in items if a["source"] == source["name"]]
+        if not source_items:
+            continue
         blocks.append({"type": "divider"})
-        body_text = f"*{i}. <{art['url']}|{art['title']}>*"
-        if art.get("source"):
-            body_text += f"　`{art['source']}`"
-        if art.get("summary"):
-            body_text += f"\n{art['summary']}"
-        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": body_text}})
+        blocks.append(
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"*📰 {source['name']}*"},
+            }
+        )
+        for i, art in enumerate(source_items, 1):
+            body_text = f"*{i}. <{art['url']}|{art['title']}>*"
+            if art.get("summary"):
+                body_text += f"\n{art['summary']}"
+            blocks.append(
+                {"type": "section", "text": {"type": "mrkdwn", "text": body_text}}
+            )
 
     slack.chat_postMessage(
         channel=SLACK_CHANNEL,
@@ -268,14 +310,13 @@ def main() -> None:
         print("記事の取得に失敗しました", file=sys.stderr)
         sys.exit(1)
 
-    unseen = interleave_sources(per_source_unseen)
-    print(f"未投稿: {len(unseen)} 件（既読除外後）")
+    print(f"未投稿: {sum(len(lst) for lst in per_source_unseen)} 件（既読除外後）")
 
-    if not unseen:
+    selected, skipped_duplicates = select_articles(per_source_unseen)
+
+    if not selected:
         print("新着の未投稿記事がないためスキップします")
         return
-
-    selected = unseen[:SELECT_COUNT]
 
     results = []
     for art in selected:
@@ -287,8 +328,9 @@ def main() -> None:
     post_to_slack(WebClient(token=slack_token), results)
     print(f"Slack に投稿しました（{len(results)} 件）")
 
+    # 投稿した記事に加え、同話題としてスキップした記事も既読扱いにして翌日以降の再登場を防ぐ
     today_str = datetime.now(JST).date().isoformat()
-    for art in selected:
+    for art in selected + skipped_duplicates:
         seen_data[art["url"]] = today_str
     save_seen_data(seen_data)
     print(f"既読リストを更新しました（計 {len(seen_data)} 件）")
