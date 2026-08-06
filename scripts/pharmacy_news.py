@@ -42,25 +42,34 @@ EXCLUDE_PATH_PATTERNS = re.compile(
 )
 
 
-def load_seen_data() -> dict[str, str]:
-    """既読データを読み込み、有効期限切れエントリを除外して返す。{url: "YYYY-MM-DD"}"""
+def today_jst() -> str:
+    return datetime.now(JST).date().isoformat()
+
+
+def load_state() -> tuple[str, dict[str, str]]:
+    """(最終投稿日, 有効期限内の既読データ) を返す。既読は {url: "YYYY-MM-DD"}。"""
     if not DATA_FILE.exists():
-        return {}
+        return "", {}
     raw = json.loads(DATA_FILE.read_text(encoding="utf-8"))
     if not isinstance(raw.get("articles"), dict):
-        return {}
-    cutoff = date.today() - timedelta(days=EXPIRE_DAYS)
-    return {
+        return "", {}
+    cutoff = date.fromisoformat(today_jst()) - timedelta(days=EXPIRE_DAYS)
+    articles = {
         url: seen_on
         for url, seen_on in raw["articles"].items()
         if date.fromisoformat(seen_on) >= cutoff
     }
+    return raw.get("last_posted", ""), articles
 
 
-def save_seen_data(data: dict[str, str]) -> None:
+def save_state(last_posted: str, articles: dict[str, str]) -> None:
     DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
     DATA_FILE.write_text(
-        json.dumps({"articles": data}, ensure_ascii=False, indent=2),
+        json.dumps(
+            {"last_posted": last_posted, "articles": articles},
+            ensure_ascii=False,
+            indent=2,
+        ),
         encoding="utf-8",
     )
 
@@ -294,7 +303,14 @@ def main() -> None:
     else:
         print("ANTHROPIC_API_KEY 未設定のため、要約は本文冒頭の抜粋で代替します")
 
-    seen_data = load_seen_data()
+    last_posted, seen_data = load_state()
+    today = today_jst()
+
+    # 同じ日に複数回起動されても投稿は1回だけ（リトライ起動を安全にするためのガード）
+    if last_posted == today:
+        print(f"本日（{today}）は投稿済みのため終了します")
+        return
+
     seen_urls = set(seen_data.keys())
     print(f"既読: {len(seen_urls)} 件（{EXPIRE_DAYS}日以内）")
 
@@ -329,10 +345,9 @@ def main() -> None:
     print(f"Slack に投稿しました（{len(results)} 件）")
 
     # 投稿した記事に加え、同話題としてスキップした記事も既読扱いにして翌日以降の再登場を防ぐ
-    today_str = datetime.now(JST).date().isoformat()
     for art in selected + skipped_duplicates:
-        seen_data[art["url"]] = today_str
-    save_seen_data(seen_data)
+        seen_data[art["url"]] = today
+    save_state(today, seen_data)
     print(f"既読リストを更新しました（計 {len(seen_data)} 件）")
 
 

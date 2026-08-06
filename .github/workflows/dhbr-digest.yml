@@ -1,7 +1,12 @@
 name: DHBR Daily Digest
 
 on:
-  workflow_dispatch: # cron-job.org から毎朝 6:00 JST に起動
+  workflow_dispatch: # cron-job.org から毎朝 6:00 JST に起動（メイン）
+  schedule:
+    # バックアップ起動。メインが失敗した日でも投稿を取り戻す。
+    # 投稿済みならスクリプト側のガードで即終了するため二重投稿にはならない。
+    - cron: "30 21 * * *" # 6:30 JST
+    - cron: "0 23 * * *" # 8:00 JST
 
 jobs:
   digest:
@@ -42,3 +47,14 @@ jobs:
           else
             echo "No changes to commit"
           fi
+
+      - name: Notify Slack on failure
+        if: failure()
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        run: |
+          RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          curl -sS -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+            -H "Content-Type: application/json; charset=utf-8" \
+            -d "$(printf '{"channel":"C0985BY63KM","text":":warning: DHBR まとめの実行に失敗しました。<%s|実行ログを確認>"}' "$RUN_URL")"

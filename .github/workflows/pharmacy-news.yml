@@ -3,6 +3,9 @@ name: Pharmacy News Daily
 on:
   schedule:
     - cron: "0 21 * * *" # 6:00 JST（GitHub Actions は数分〜十数分遅延することがある）
+    # バックアップ起動。投稿済みならスクリプト側のガードで即終了する。
+    - cron: "30 21 * * *" # 6:30 JST
+    - cron: "0 23 * * *" # 8:00 JST
   workflow_dispatch: # 手動実行 / cron-job.org からの起動用
 
 jobs:
@@ -45,3 +48,14 @@ jobs:
           else
             echo "No changes to commit"
           fi
+
+      - name: Notify Slack on failure
+        if: failure()
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        run: |
+          RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          curl -sS -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+            -H "Content-Type: application/json; charset=utf-8" \
+            -d "$(printf '{"channel":"C0BFUN7AJHJ","text":":warning: 薬剤ニュースの実行に失敗しました。<%s|実行ログを確認>"}' "$RUN_URL")"
