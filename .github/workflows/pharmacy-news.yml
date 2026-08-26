@@ -7,6 +7,14 @@ on:
     - cron: "30 21 * * *" # 6:30 JST
     - cron: "0 23 * * *" # 8:00 JST
   workflow_dispatch: # 手動実行 / cron-job.org からの起動用
+  workflow_call: # DHBR Daily Digest から呼ばれる（メイン経路）。
+    # GitHub 側の都合で schedule が丸ごと発火しない日があるため、cron-job.org から
+    # 確実に起動されている DHBR の実行に相乗りする。上の schedule は保険として残す。
+
+# 相乗り経路と schedule が同時刻に重なっても、git push が競合しないよう直列化する。
+concurrency:
+  group: pharmacy-news
+  cancel-in-progress: false
 
 jobs:
   digest:

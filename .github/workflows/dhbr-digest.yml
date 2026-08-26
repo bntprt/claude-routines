@@ -58,3 +58,14 @@ jobs:
             -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
             -H "Content-Type: application/json; charset=utf-8" \
             -d "$(printf '{"channel":"C0985BY63KM","text":":warning: DHBR まとめの実行に失敗しました。<%s|実行ログを確認>"}' "$RUN_URL")"
+
+  # 薬剤ニュースを相乗りさせる。GitHub の schedule は丸ごと発火しない日があるが、
+  # この DHBR は cron-job.org から workflow_dispatch で起動されるため影響を受けない。
+  # DHBR の成否にかかわらず動かす（if: always()）。同じ main へ push するので直列にする。
+  pharmacy-news:
+    needs: digest
+    if: always()
+    permissions:
+      contents: write
+    uses: ./.github/workflows/pharmacy-news.yml
+    secrets: inherit
