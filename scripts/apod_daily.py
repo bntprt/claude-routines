@@ -50,8 +50,9 @@ def save_state(apod_date: str) -> None:
 def fetch_apod(api_key: str) -> dict:
     """最新の APOD を取得する。
 
-    日付は指定しない。APOD は米国東部時間の 0 時ごろに更新されるため、
-    6:00 JST の時点では「米国日付で前日ぶん」が最新版になる。
+    日付は指定せず「今の時点での最新 1 件」を取る。APOD は米国東部時間の 0 時
+    （= 13:00 JST / 冬時間は 14:00 JST）に更新されるため、更新前に走った回は
+    前日ぶんを取得することになるが、その場合は呼び出し側の重複ガードで投稿しない。
     """
     resp = requests.get(
         APOD_ENDPOINT,
@@ -156,9 +157,17 @@ def summarize(client, apod: dict) -> dict:
     }
 
 
+def format_date_ja(apod_date: str) -> str:
+    """APOD の日付（YYYY-MM-DD）を「YYYY年MM月DD日」にする。解析できなければ JST の今日。"""
+    try:
+        return datetime.strptime(apod_date, "%Y-%m-%d").strftime("%Y年%m月%d日")
+    except ValueError:
+        return datetime.now(JST).strftime("%Y年%m月%d日")
+
+
 def build_blocks(apod: dict, digest: dict) -> list[dict]:
-    posted_on = datetime.now(JST).strftime("%Y年%m月%d日")
     apod_date = apod.get("date", "")
+    posted_on = format_date_ja(apod_date)
     title_en = apod.get("title", "(no title)")
     title_ja = digest.get("title_ja")
     page_url = apod_page_url(apod_date)
