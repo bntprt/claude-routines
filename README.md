@@ -46,6 +46,9 @@ GitHub リポジトリの **Settings → Secrets and variables → Actions** に
 
 **このリポジトリは public です。API キーをコード中に直接書かないでください。**
 
+`ANTHROPIC_API_KEY` を使う（＝ Claude API に課金が発生する）のは、このルーティンだけです。
+薬剤ニュースと DHBR のワークフローにはこの Secret を渡していません。
+
 Bot（`claude-hbr`）は `#天文学` チャンネルに参加済みです。
 
 ### 手動実行
@@ -82,8 +85,11 @@ GitHub Actions 上で動くため、**PC やデスクトップアプリが起動
 2. `data/pharmacy_seen_articles.json` と照合して未投稿の記事に絞る（重複排除、14 日で失効）
 3. 各サイトから 3 件ずつ選定。**両サイトが同じ話題を報じている場合は片方だけ採用**し、
    もう片方は次の記事に差し替える（タイトルの文字一致率で判定）
-4. 各記事を Claude API（Haiku）で約 200 字に要約
-   （`ANTHROPIC_API_KEY` 未設定時は記事リード文の抜粋で代替）
+4. 各記事のリード文を約 200 字ぶん抜粋
+   （**Claude API による要約はあえて使っていません**。両サイトとも有料会員限定記事が多く
+   本文を取得できないため、要約しても品質が出ず課金に見合わないという判断です。
+   ワークフローから `ANTHROPIC_API_KEY` を渡していないので、Secret を登録しても
+   このルーティンは課金されません）
 5. サイトごとにまとめて Slack `#薬剤ニュース` チャンネルへ投稿
 6. 投稿済み URL（同話題スキップ分を含む）を `data/pharmacy_seen_articles.json` に保存して main へコミット
 
@@ -103,8 +109,9 @@ GitHub リポジトリの **Settings → Secrets and variables → Actions** に
 
 | Secret 名 | 説明 |
 |---|---|
-| `ANTHROPIC_API_KEY` | Anthropic コンソールで発行した API キー |
 | `SLACK_BOT_TOKEN` | Slack Bot の OAuth トークン（`xoxb-...`） |
+
+`ANTHROPIC_API_KEY` は使いません（上記のとおり要約を行わないため）。
 
 Bot を `#薬剤ニュース` チャンネルに招待してください（`/invite @your-bot`）。
 
@@ -116,7 +123,6 @@ GitHub の **Actions タブ → Pharmacy News Daily → Run workflow** から手
 
 ```bash
 pip install -r scripts/requirements.txt
-export ANTHROPIC_API_KEY=sk-ant-...
 export SLACK_BOT_TOKEN=xoxb-...
 python scripts/pharmacy_news.py
 ```
@@ -130,7 +136,7 @@ python scripts/pharmacy_news.py
 
 1. dhbr.diamond.jp から最新 10 件の記事を取得
 2. `data/seen_articles.json` と照合して未投稿の記事に絞る
-3. 上位 3 件を Claude API（Haiku）で 200 字に要約
+3. 上位 3 件のリード文を 200 字ぶん抜粋（Claude API は使いません）
 4. Slack `#hbrまとめ` チャンネルへ投稿
 5. 投稿済み URL を `data/seen_articles.json` に保存してコミット
 
@@ -140,8 +146,9 @@ GitHub リポジトリの **Settings → Secrets and variables → Actions** に
 
 | Secret 名 | 説明 |
 |---|---|
-| `ANTHROPIC_API_KEY` | Anthropic コンソールで発行した API キー |
 | `SLACK_BOT_TOKEN` | Slack Bot の OAuth トークン（`xoxb-...`） |
+
+`ANTHROPIC_API_KEY` は使いません（`scripts/dhbr_digest.py` は Claude API を呼びません）。
 
 #### Slack Bot に必要なスコープ
 
@@ -158,7 +165,6 @@ GitHub の **Actions タブ → DHBR Daily Digest → Run workflow** から手�
 
 ```bash
 pip install -r scripts/requirements.txt
-export ANTHROPIC_API_KEY=sk-ant-...
 export SLACK_BOT_TOKEN=xoxb-...
 python scripts/dhbr_digest.py
 ```

@@ -33,7 +33,9 @@ jobs:
       - name: Run digest
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # ANTHROPIC_API_KEY はあえて渡さない。日刊薬業 / PHARMACY NEWSBREAK は
+          # 有料会員限定記事が多く本文を取得できないため、要約しても品質が出ない。
+          # リード文の抜粋で運用し、Claude API の課金対象は APOD だけにする。
         run: python scripts/pharmacy_news.py
 
       - name: Commit updated seen-articles list
