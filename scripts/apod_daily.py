@@ -18,6 +18,7 @@ DATA_FILE = Path(__file__).parent.parent / "data" / "apod_seen.json"
 SLACK_CHANNEL = "C0BSUECLM1P"  # #天文学
 APOD_ENDPOINT = "https://api.nasa.gov/planetary/apod"
 SUMMARY_LENGTH = 350  # 要約の目安文字数
+FALLBACK_LENGTH = 700  # 要約できなかったときに載せる英語原文の上限
 
 
 def today_jst() -> str:
@@ -72,6 +73,17 @@ def apod_page_url(apod_date: str) -> str:
     return f"https://apod.nasa.gov/apod/ap{d.strftime('%y%m%d')}.html"
 
 
+def truncate_at_sentence(text: str, limit: int) -> str:
+    """limit 文字以内に収める。できるだけ文の切れ目で切り、切った場合は … を付ける。"""
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    cut = max(head.rfind(". "), head.rfind("! "), head.rfind("? "), head.rfind("。"))
+    if cut > limit // 2:
+        return head[: cut + 1].rstrip()
+    return head.rstrip() + "…"
+
+
 def _extract_json(text: str) -> dict | None:
     """モデル出力から JSON オブジェクトを取り出す（```json フェンス付きにも対応）。"""
     fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
@@ -91,15 +103,17 @@ def _extract_json(text: str) -> dict | None:
 def summarize(client, apod: dict) -> dict:
     """Claude（Haiku）で高校生向けの日本語まとめを生成する。
 
-    戻り値: {"title_ja": str, "summary": str, "glossary": [{"term", "desc"}], "point": str}
-    失敗時は英語原文の冒頭で代替する。
+    戻り値: {"title_ja": str, "summary": str, "glossary": [{"term", "desc"}],
+             "point": str, "translated": bool}
+    失敗時は英語原文の冒頭で代替し、translated=False を返す。
     """
     explanation = " ".join((apod.get("explanation") or "").split())
     fallback = {
         "title_ja": "",
-        "summary": explanation[:600],
+        "summary": truncate_at_sentence(explanation, FALLBACK_LENGTH),
         "glossary": [],
         "point": "",
+        "translated": False,
     }
     if client is None or not explanation:
         return fallback
@@ -142,7 +156,10 @@ def summarize(client, apod: dict) -> dict:
     parsed = _extract_json(text)
     if parsed is None or not parsed.get("summary"):
         print("  要約のJSON解析に失敗: 生テキストを使います", file=sys.stderr)
-        return {**fallback, "summary": text.strip() or fallback["summary"]}
+        stripped = text.strip()
+        if not stripped:
+            return fallback
+        return {**fallback, "summary": stripped, "translated": True}
 
     glossary = [
         g
@@ -154,6 +171,7 @@ def summarize(client, apod: dict) -> dict:
         "summary": str(parsed["summary"]).strip(),
         "glossary": glossary[:4],
         "point": str(parsed.get("point") or "").strip(),
+        "translated": True,
     }
 
 
@@ -210,6 +228,19 @@ def build_blocks(apod: dict, digest: dict) -> list[dict]:
     blocks.append(
         {"type": "section", "text": {"type": "mrkdwn", "text": digest["summary"]}}
     )
+
+    if not digest.get("translated"):
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": "⚠️ 日本語要約を生成できなかったため、英語の原文を掲載しています。",
+                    }
+                ],
+            }
+        )
 
     if digest.get("point"):
         blocks.append(
@@ -273,7 +304,10 @@ def main() -> None:
 
     # 同じ APOD を二重投稿しない（バックアップ起動を安全にするためのガード）
     state = load_state()
-    if state.get("last_apod_date") == apod_date:
+    force = os.environ.get("FORCE_POST", "").strip().lower() in ("1", "true", "yes")
+    if force and state.get("last_apod_date") == apod_date:
+        print(f"FORCE_POST が有効なため、投稿済みの APOD {apod_date} を再投稿します")
+    elif state.get("last_apod_date") == apod_date:
         print(f"APOD {apod_date}（{apod.get('title')}）は投稿済みのため終了します")
         return
 

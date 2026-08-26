@@ -8,6 +8,11 @@ on:
     # 毎時チェックなので夏時間の切り替わりや公開遅れにも自動で追従する。
     - cron: "0 4-12 * * *" # 13:00〜21:00 JST（GitHub Actions は数分〜十数分遅延することがある）
   workflow_dispatch: # 手動実行 / cron-job.org からの起動用
+    inputs:
+      force:
+        description: "投稿済みの APOD でも再投稿する（動作確認用）"
+        type: boolean
+        default: false
 
 jobs:
   digest:
@@ -36,6 +41,7 @@ jobs:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           NASA_API_KEY: ${{ secrets.NASA_API_KEY }}
+          FORCE_POST: ${{ inputs.force }}
         run: python scripts/apod_daily.py
 
       - name: Commit updated APOD state
