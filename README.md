@@ -41,7 +41,7 @@ GitHub リポジトリの **Settings → Secrets and variables → Actions** に
 | Secret 名 | 説明 |
 |---|---|
 | `NASA_API_KEY` | [api.nasa.gov](https://api.nasa.gov/) で発行した API キー（未設定なら `DEMO_KEY` で動きますがレート制限が厳しめです） |
-| `ANTHROPIC_API_KEY` | Anthropic コンソールで発行した API キー（DHBR / 薬剤ニュースと共通） |
+| `ANTHROPIC_API_KEY` | Anthropic コンソールで発行した API キー。**未登録だと日本語要約が生成されず、英語原文がそのまま投稿されます**（DHBR / 薬剤ニュースと共通） |
 | `SLACK_BOT_TOKEN` | Slack Bot の OAuth トークン（`xoxb-...`、DHBR / 薬剤ニュースと共通） |
 
 **このリポジトリは public です。API キーをコード中に直接書かないでください。**
@@ -52,6 +52,10 @@ Bot（`claude-hbr`）は `#天文学` チャンネルに参加済みです。
 
 GitHub の **Actions タブ → APOD Daily → Run workflow** から手動実行できます。
 
+その日の APOD をすでに投稿済みだと重複ガードで何もせず終了します。動作確認などで
+あえて再投稿したいときは、Run workflow のダイアログで
+**「投稿済みの APOD でも再投稿する」にチェック**を入れてください。
+
 ### ローカル実行
 
 ```bash
@@ -60,6 +64,9 @@ export NASA_API_KEY=...
 export ANTHROPIC_API_KEY=sk-ant-...
 export SLACK_BOT_TOKEN=xoxb-...
 python scripts/apod_daily.py
+
+# 投稿済みでも再投稿する
+FORCE_POST=true python scripts/apod_daily.py
 ```
 
 ## Pharmacy News Daily（日刊薬業・PHARMACY NEWSBREAK）
