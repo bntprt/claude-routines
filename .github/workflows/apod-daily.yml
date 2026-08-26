@@ -1,0 +1,63 @@
+name: APOD Daily
+
+on:
+  schedule:
+    # APOD は米国東部時間の 0 時に更新される = 13:00 JST（夏時間）/ 14:00 JST（冬時間）。
+    # 13:00〜21:00 JST を 1 時間ごとに見に行き、新しい APOD を見つけた最初の回だけ投稿する。
+    # 同じ APOD ならスクリプト側のガードで即終了するので、投稿は 1 日 1 回。
+    # 毎時チェックなので夏時間の切り替わりや公開遅れにも自動で追従する。
+    - cron: "0 4-12 * * *" # 13:00〜21:00 JST（GitHub Actions は数分〜十数分遅延することがある）
+  workflow_dispatch: # 手動実行 / cron-job.org からの起動用
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # apod_seen.json のコミット用
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: scripts/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r scripts/requirements.txt
+
+      - name: Run APOD digest
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          NASA_API_KEY: ${{ secrets.NASA_API_KEY }}
+        run: python scripts/apod_daily.py
+
+      - name: Commit updated APOD state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/apod_seen.json
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update apod state $(TZ=Asia/Tokyo date +'%Y-%m-%d')"
+            git pull --rebase origin main
+            git push origin main
+          else
+            echo "No changes to commit"
+          fi
+
+      - name: Notify Slack on failure
+        if: failure()
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        run: |
+          RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          curl -sS -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+            -H "Content-Type: application/json; charset=utf-8" \
+            -d "$(printf '{"channel":"C0BSUECLM1P","text":":warning: 今日の天文学（APOD）の実行に失敗しました。<%s|実行ログを確認>"}' "$RUN_URL")"
