@@ -73,6 +73,21 @@ def apod_page_url(apod_date: str) -> str:
     return f"https://apod.nasa.gov/apod/ap{d.strftime('%y%m%d')}.html"
 
 
+def api_error_detail(exc) -> str:
+    """Anthropic の APIStatusError から、原因がわかる本文メッセージを取り出す。"""
+    try:
+        message = exc.response.json().get("error", {}).get("message", "")
+        if message:
+            return message
+    except Exception:
+        pass
+    for attr in ("message", "body"):
+        value = getattr(exc, attr, None)
+        if value:
+            return str(value)[:300]
+    return str(exc)[:300] or exc.__class__.__name__
+
+
 def truncate_at_sentence(text: str, limit: int) -> str:
     """limit 文字以内に収める。できるだけ文の切れ目で切り、切った場合は … を付ける。"""
     if len(text) <= limit:
@@ -144,7 +159,11 @@ def summarize(client, apod: dict) -> dict:
         )
         text = next((b.text for b in response.content if b.type == "text"), "")
     except anthropic.APIStatusError as e:
-        print(f"  要約APIエラー ({e.status_code}): 原文で代替します", file=sys.stderr)
+        print(
+            f"  要約APIエラー ({e.status_code}): {api_error_detail(e)}",
+            file=sys.stderr,
+        )
+        print("  → 日本語要約をあきらめ、英語の原文を掲載します", file=sys.stderr)
         return fallback
     except anthropic.APIConnectionError:
         print("  要約API接続エラー: 原文で代替します", file=sys.stderr)
