@@ -2,6 +2,61 @@
 
 Claude Code で動かす自動化ルーティン集。
 
+## 今日の天文学（APOD）
+
+毎朝 6:00 JST に NASA の [APOD（Astronomy Picture of the Day）](https://apod.nasa.gov/apod/astropix.html)
+を取得し、**高校生が理解できるレベル**の日本語にまとめて Slack の `#天文学` チャンネルへ投稿します。
+GitHub Actions 上で動くため、**PC やデスクトップアプリが起動していなくても実行されます**。
+
+### 動作概要
+
+1. `https://api.nasa.gov/planetary/apod` から最新の APOD を取得（`thumbs=true` で動画のサムネイルも取得）
+2. `data/apod_seen.json` と照合し、同じ日付の APOD を二重投稿しない
+3. 解説文を Claude API（Haiku）で高校生向けの日本語に要約
+   （タイトル訳 / 約 350 字の要約 / 「ここが面白い」1 行 / ことばのメモ 0〜4 個）
+   `ANTHROPIC_API_KEY` 未設定時は英語原文をそのまま投稿します
+4. 画像（動画ならサムネイル＋リンク）付きで Slack `#天文学` チャンネルへ投稿
+5. 投稿した APOD の日付を `data/apod_seen.json` に保存して main へコミット
+
+> **日付について**: APOD は米国東部時間の 0 時ごろに更新されます。6:00 JST の時点では
+> 米国日付で前日ぶんが最新版なので、スクリプトは日付を指定せず「最新の 1 件」を取得します。
+
+### スケジュール
+
+`.github/workflows/apod-daily.yml` の `schedule`（cron: `0 21 * * *` UTC = 6:00 JST）で自動実行されます。
+6:30 JST / 8:00 JST のバックアップ起動も設定していますが、同じ APOD なら投稿せずに終了します。
+
+> **注意**: `schedule` トリガーはデフォルトブランチ（main）のワークフローのみ有効です。
+> このワークフローを main にマージすると稼働を開始します。
+
+### セットアップ
+
+GitHub リポジトリの **Settings → Secrets and variables → Actions** に以下を登録してください。
+
+| Secret 名 | 説明 |
+|---|---|
+| `NASA_API_KEY` | [api.nasa.gov](https://api.nasa.gov/) で発行した API キー（未設定なら `DEMO_KEY` で動きますがレート制限が厳しめです） |
+| `ANTHROPIC_API_KEY` | Anthropic コンソールで発行した API キー（DHBR / 薬剤ニュースと共通） |
+| `SLACK_BOT_TOKEN` | Slack Bot の OAuth トークン（`xoxb-...`、DHBR / 薬剤ニュースと共通） |
+
+**このリポジトリは public です。API キーをコード中に直接書かないでください。**
+
+Bot（`claude-hbr`）は `#天文学` チャンネルに参加済みです。
+
+### 手動実行
+
+GitHub の **Actions タブ → APOD Daily → Run workflow** から手動実行できます。
+
+### ローカル実行
+
+```bash
+pip install -r scripts/requirements.txt
+export NASA_API_KEY=...
+export ANTHROPIC_API_KEY=sk-ant-...
+export SLACK_BOT_TOKEN=xoxb-...
+python scripts/apod_daily.py
+```
+
 ## Pharmacy News Daily（日刊薬業・PHARMACY NEWSBREAK）
 
 毎朝 6:00 JST に [日刊薬業（nk.jiho.jp）](https://nk.jiho.jp/) と
