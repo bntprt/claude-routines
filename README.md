@@ -107,9 +107,28 @@ GitHub Actions 上で動くため、**PC やデスクトップアプリが起動
 
 ### スケジュール
 
-`.github/workflows/pharmacy-news.yml` の `schedule`（cron: `0 21 * * *` UTC = 6:00 JST）で自動実行されます。
-GitHub Actions の cron は数分〜十数分遅れることがあります。時刻の正確さが必要な場合は、
-DHBR と同様に cron-job.org から `workflow_dispatch` を起動する方式も併用できます。
+**メイン経路は DHBR Daily Digest への相乗りです。** DHBR は cron-job.org から
+`workflow_dispatch` で毎朝 6:00 JST に起動されるため、GitHub 側の都合に左右されません。
+`dhbr-digest.yml` の `pharmacy-news` ジョブが `pharmacy-news.yml` を
+`workflow_call` で呼び出し、DHBR の投稿に続けて薬剤ニュースを投稿します。
+DHBR 側が失敗しても薬剤ニュースは実行されます（`if: always()`）。
+
+保険として `pharmacy-news.yml` 自身の `schedule` も残しています。
+
+| cron (UTC) | JST | 役割 |
+|---|---|---|
+| （DHBR 相乗り） | 6:00 | **メイン**（cron-job.org 起動） |
+| `0 21 * * *` | 6:00 | 保険 |
+| `30 21 * * *` | 6:30 | 保険 |
+| `0 23 * * *` | 8:00 | 保険 |
+
+二重投稿は起きません。`data/pharmacy_seen_articles.json` の `last_posted`（JST の日付）を見て、
+**その日すでに投稿済みなら即終了**します。相乗り経路と `schedule` が同時刻に重なっても
+`concurrency: pharmacy-news` で直列化されるため、main への push も競合しません。
+
+> **なぜ相乗りにしたか**: 2026-08-27、GitHub Actions の `schedule` がリポジトリ全体で
+> 11 時間以上まったく発火せず、6:00 / 6:30 / 8:00 の 3 枠すべてが不発になりました
+> （同時刻に `workflow_dispatch` は正常動作）。`schedule` だけに依存しない経路が必要と判断しました。
 
 > **注意**: `schedule` トリガーはデフォルトブランチ（main）のワークフローのみ有効です。
 > このワークフローを main にマージすると稼働を開始します。
