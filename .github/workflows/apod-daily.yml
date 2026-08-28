@@ -1,7 +1,9 @@
 name: APOD Daily
 
 on:
-  # メイン経路。cron-job.org から 13:05 JST に起動する（APOD は 13:00 JST 更新）。
+  # メイン経路。cron-job.org から 14:05 JST に起動する。
+  # APOD の更新は 13:00 JST（夏時間）/ 14:00 JST（冬時間）と年 2 回ずれるため、
+  # 遅いほうに合わせた 14:05 固定にしてある。これなら年間を通して必ず更新後に走る。
   # 手動実行もここから。
   workflow_dispatch:
     inputs:

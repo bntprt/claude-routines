@@ -70,7 +70,7 @@ jobs:
     uses: ./.github/workflows/pharmacy-news.yml
     secrets: inherit
 
-  # APOD の取りこぼしを拾う。APOD 本来の投稿は cron-job.org が 13:05 JST に起動する
+  # APOD の取りこぼしを拾う。APOD 本来の投稿は cron-job.org が 14:05 JST に起動する
   # 経路（更新直後に最新版が届く）で、それが失敗した日だけここで翌朝 6:00 JST に
   # 遅れて投稿される。投稿済みなら重複ガードで即終了するので二重投稿はしない。
   apod-daily:
