@@ -1,24 +1,38 @@
 name: APOD Daily
 
 on:
-  schedule:
-    # APOD は米国東部時間の 0 時に更新される = 13:00 JST（夏時間）/ 14:00 JST（冬時間）。
-    # 12:13〜23:53 JST を 20 分ごとに見に行き、新しい APOD を見つけた最初の回だけ投稿する。
-    # 同じ APOD ならスクリプト側のガードで即終了するので、投稿は 1 日 1 回。
-    #
-    # 毎時 0 分を避けて :13 / :33 / :53 に散らしているのは、GitHub Actions の schedule が
-    # 毎時 0 分の混雑で遅延・スキップされるため（2026-08-27 に "0 4-12 * * *" だった頃、
-    # 9 回の予定がすべてスキップされて投稿が飛んだ）。
-    # 1 日 36 回試すことで、多少落とされても必ずどこかで通るようにしている。
-    # 空振りの回は NASA API を 1 回叩いて終了するだけで、Claude API は呼ばない
-    # （課金は実際に投稿する 1 回ぶんのみ）。
-    - cron: "13,33,53 3-14 * * *" # 12:13〜23:53 JST
-  workflow_dispatch: # 手動実行 / cron-job.org からの起動用
+  # メイン経路。cron-job.org から 14:05 JST に起動する。
+  # APOD の更新は 13:00 JST（夏時間）/ 14:00 JST（冬時間）と年 2 回ずれるため、
+  # 遅いほうに合わせた 14:05 固定にしてある。これなら年間を通して必ず更新後に走る。
+  # 手動実行もここから。
+  workflow_dispatch:
     inputs:
       force:
         description: "投稿済みの APOD でも再投稿する（動作確認用）"
         type: boolean
         default: false
+
+  # 取りこぼし用。DHBR Daily Digest（cron-job.org が 6:00 JST に起動）から呼ばれる。
+  # 6:00 JST 時点の最新は米国日付で前日ぶんなので、前日ぶんを投稿できていた日は
+  # 重複ガードで何もせず終了し、投稿が飛んだ日だけ遅れて拾う保険として働く。
+  workflow_call:
+    inputs:
+      force:
+        description: "投稿済みの APOD でも再投稿する（動作確認用）"
+        type: boolean
+        default: false
+
+  # バックアップ。ただし GitHub の schedule はこのリポジトリでは信頼できない。
+  # 2026-08-27 は 9 回、8-28 は 36 回の予定がいずれも 1 度も発火せず、
+  # 2 日続けて投稿が飛んだ。動けば儲けもの、という位置づけで残している。
+  # 毎時 0 分は混雑するため :13 / :33 / :53 に散らしてある。
+  schedule:
+    - cron: "13,33,53 3-14 * * *" # 12:13〜23:53 JST
+
+# 3 つの起動経路が重なっても、main への push が競合しないよう直列化する。
+concurrency:
+  group: apod-daily
+  cancel-in-progress: false
 
 jobs:
   digest:
