@@ -2,10 +2,12 @@
 """今日の天文学（APOD: Astronomy Picture of the Day）を取得し、
 高校生が理解できるレベルの日本語にまとめて Slack の #天文学 へ投稿する。"""
 
+import html
 import json
 import os
 import re
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -16,7 +18,12 @@ JST = timezone(timedelta(hours=9))
 
 DATA_FILE = Path(__file__).parent.parent / "data" / "apod_seen.json"
 SLACK_CHANNEL = "C0BSUECLM1P"  # #天文学
-APOD_ENDPOINT = "https://api.nasa.gov/planetary/apod"
+# 2026-09 に APOD は apod.nasa.gov から science.nasa.gov へ移転した。旧 API
+# （api.nasa.gov/planetary/apod）は 9/30 から 500 やタイムアウトを返すようになり、
+# 応答が返っても画像が NASA ロゴ・タイトルが "NASA Science" のダミーになっている
+# （2026-12-01 にアーカイブ予定）。後継の WordPress 系エンドポイントを使う。API キーは不要。
+APOD_ENDPOINT = "https://science.nasa.gov/wp-json/wp/v2/apod-basic"
+FETCH_ATTEMPTS = 3  # 一時的な 5xx / タイムアウトに備えた試行回数
 SUMMARY_LENGTH = 350  # 要約の目安文字数
 FALLBACK_LENGTH = 700  # 要約できなかったときに載せる英語原文の上限
 
@@ -48,29 +55,75 @@ def save_state(apod_date: str) -> None:
     )
 
 
-def fetch_apod(api_key: str) -> dict:
-    """最新の APOD を取得する。
+def html_to_text(value) -> str:
+    """HTML 断片をプレーンテキストにする（タグ除去・実体参照の復元・空白の正規化）。"""
+    text = re.sub(r"<[^>]+>", " ", str(value or ""))
+    return " ".join(html.unescape(text).split())
+
+
+def normalize_apod(raw: dict) -> dict:
+    """新エンドポイントの 1 件を、このスクリプトが扱う形にそろえる。
+
+    新エンドポイントの主なフィールド（2026-10 時点）:
+      date: "YYYY-MM-DD" / title / media_type / explanation（HTML、先頭に
+      "Explanation:" ラベル付き）/ copyright・credit（HTML）/ hdurl（画像）/
+      url・permalink（science.nasa.gov の記事ページ）
+    """
+    explanation = html_to_text(raw.get("explanation"))
+    explanation = re.sub(r"^Explanation:\s*", "", explanation, flags=re.IGNORECASE)
+    explanation = re.split(r"\s*Tomorrow'?s picture:", explanation, flags=re.IGNORECASE)[0]
+
+    image_url = str(raw.get("hdurl") or "").strip()
+    if not image_url.startswith("http"):
+        image_url = ""
+
+    return {
+        "date": str(raw.get("date") or "")[:10],
+        "title": html_to_text(raw.get("title")),
+        "explanation": explanation.strip(),
+        "media_type": str(raw.get("media_type") or "image"),
+        "image_url": image_url,
+        "page_url": str(raw.get("permalink") or raw.get("url") or "").strip()
+        or "https://science.nasa.gov/apod/",
+        "copyright": html_to_text(raw.get("copyright") or raw.get("credit")),
+    }
+
+
+def fetch_apod() -> dict:
+    """最新の APOD を 1 件取得し、normalize_apod() した形で返す。
 
     日付は指定せず「今の時点での最新 1 件」を取る。APOD は米国東部時間の 0 時
     （= 13:00 JST / 冬時間は 14:00 JST）に更新されるため、更新前に走った回は
     前日ぶんを取得することになるが、その場合は呼び出し側の重複ガードで投稿しない。
+
+    一時的な 5xx・タイムアウト・接続エラーは間隔をあけて再試行する。
     """
-    resp = requests.get(
-        APOD_ENDPOINT,
-        params={"api_key": api_key, "thumbs": "true"},
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json()
-
-
-def apod_page_url(apod_date: str) -> str:
-    """APOD の公式ページ URL（https://apod.nasa.gov/apod/apYYMMDD.html）を組み立てる。"""
-    try:
-        d = datetime.strptime(apod_date, "%Y-%m-%d")
-    except ValueError:
-        return "https://apod.nasa.gov/apod/astropix.html"
-    return f"https://apod.nasa.gov/apod/ap{d.strftime('%y%m%d')}.html"
+    last_error: Exception | None = None
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        try:
+            resp = requests.get(
+                APOD_ENDPOINT,
+                params={"per_page": 1},
+                headers={"User-Agent": "claude-routines-apod-daily"},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            item = data[0] if isinstance(data, list) and data else data
+            if not isinstance(item, dict):
+                raise ValueError(f"想定外のレスポンス形式: {str(data)[:200]}")
+            return normalize_apod(item)
+        except requests.HTTPError as e:
+            last_error = e
+            if e.response is not None and e.response.status_code < 500:
+                break  # 4xx は待っても直らない
+        except (requests.RequestException, ValueError) as e:
+            last_error = e
+        if attempt < FETCH_ATTEMPTS:
+            wait = 10 * attempt
+            print(f"  取得に失敗（{attempt}/{FETCH_ATTEMPTS}回目）: {last_error} → {wait}秒後に再試行")
+            time.sleep(wait)
+    raise RuntimeError(f"APOD の取得に失敗しました: {last_error}")
 
 
 def api_error_detail(exc) -> str:
@@ -207,7 +260,7 @@ def build_blocks(apod: dict, digest: dict) -> list[dict]:
     posted_on = format_date_ja(apod_date)
     title_en = apod.get("title", "(no title)")
     title_ja = digest.get("title_ja")
-    page_url = apod_page_url(apod_date)
+    page_url = apod["page_url"]
 
     heading = f"*<{page_url}|{title_ja or title_en}>*"
     if title_ja:
@@ -225,22 +278,20 @@ def build_blocks(apod: dict, digest: dict) -> list[dict]:
         {"type": "section", "text": {"type": "mrkdwn", "text": heading}},
     ]
 
-    # 画像（動画の場合は thumbs=true で得たサムネイル）を貼る
-    media_type = apod.get("media_type")
-    image_url = apod.get("url") if media_type == "image" else apod.get("thumbnail_url")
-    if image_url:
+    # 画像を貼る。動画の日は画像が無いことがあるので、記事ページへのリンクを出す
+    if apod.get("image_url"):
         blocks.append(
             {
                 "type": "image",
-                "image_url": image_url,
+                "image_url": apod["image_url"],
                 "alt_text": title_en[:150],
             }
         )
-    if media_type == "video" and apod.get("url"):
+    if apod.get("media_type") != "image":
         blocks.append(
             {
                 "type": "section",
-                "text": {"type": "mrkdwn", "text": f"🎬 <{apod['url']}|動画を見る>"},
+                "text": {"type": "mrkdwn", "text": f"🎬 <{page_url}|NASA のページで見る>"},
             }
         )
 
@@ -289,14 +340,13 @@ def build_blocks(apod: dict, digest: dict) -> list[dict]:
 
 
 def main() -> None:
+    # DRY_RUN=1 なら取得と整形だけ行い、要約・投稿・状態保存はしない（動作確認用）
+    dry_run = os.environ.get("DRY_RUN", "").strip().lower() in ("1", "true", "yes")
+
     slack_token = os.environ.get("SLACK_BOT_TOKEN", "")
-    if not slack_token:
+    if not slack_token and not dry_run:
         print("SLACK_BOT_TOKEN が設定されていません", file=sys.stderr)
         sys.exit(1)
-
-    api_key = os.environ.get("NASA_API_KEY", "").strip() or "DEMO_KEY"
-    if api_key == "DEMO_KEY":
-        print("NASA_API_KEY 未設定のため DEMO_KEY を使います（レート制限が厳しめです）")
 
     anthropic_client = None
     if os.environ.get("ANTHROPIC_API_KEY"):
@@ -308,18 +358,20 @@ def main() -> None:
 
     print("APOD を取得中...")
     try:
-        apod = fetch_apod(api_key)
-    except requests.HTTPError as e:
-        print(f"APOD の取得に失敗しました (HTTP {e.response.status_code})", file=sys.stderr)
-        sys.exit(1)
-    except requests.RequestException as e:
-        print(f"APOD の取得に失敗しました ({e})", file=sys.stderr)
+        apod = fetch_apod()
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
         sys.exit(1)
 
     apod_date = apod.get("date", "")
     if not apod_date or not apod.get("explanation"):
         print(f"APOD のレスポンスが不正です: {str(apod)[:200]}", file=sys.stderr)
         sys.exit(1)
+
+    if dry_run:
+        print(json.dumps(apod, ensure_ascii=False, indent=2))
+        print("DRY_RUN のため、要約・投稿・状態保存は行わずに終了します")
+        return
 
     # 同じ APOD を二重投稿しない（バックアップ起動を安全にするためのガード）
     state = load_state()
