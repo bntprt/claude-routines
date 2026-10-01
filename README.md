@@ -4,13 +4,18 @@ Claude Code で動かす自動化ルーティン集。
 
 ## 今日の天文学（APOD）
 
-NASA の [APOD（Astronomy Picture of the Day）](https://apod.nasa.gov/apod/astropix.html) が更新され次第、
+NASA の [APOD（Astronomy Picture of the Day）](https://science.nasa.gov/apod/) が更新され次第、
 **高校生が理解できるレベル**の日本語にまとめて Slack の `#天文学` チャンネルへ投稿します。
 GitHub Actions 上で動くため、**PC やデスクトップアプリが起動していなくても実行されます**。
 
 ### 動作概要
 
-1. `https://api.nasa.gov/planetary/apod` から最新の APOD を取得（`thumbs=true` で動画のサムネイルも取得）
+1. `https://science.nasa.gov/wp-json/wp/v2/apod-basic?per_page=1` から最新の APOD を取得
+   （API キー不要。一時的な 5xx・タイムアウトは最大 3 回まで再試行）
+
+   > 2026-09 に APOD は apod.nasa.gov から science.nasa.gov へ移転しました。旧 API
+   > `api.nasa.gov/planetary/apod` は 9/30 から 500 やタイムアウトを返すようになり、
+   > 応答があっても画像が NASA ロゴ・タイトルが「NASA Science」のダミーです（12/1 アーカイブ予定）。
 2. `data/apod_seen.json` と照合し、同じ日付の APOD を二重投稿しない
 3. 解説文を Claude API（Haiku）で高校生向けの日本語に要約
    （タイトル訳 / 約 350 字の要約 / 「ここが面白い」1 行 / ことばのメモ 0〜4 個）
@@ -70,7 +75,6 @@ GitHub リポジトリの **Settings → Secrets and variables → Actions** に
 
 | Secret 名 | 説明 |
 |---|---|
-| `NASA_API_KEY` | [api.nasa.gov](https://api.nasa.gov/) で発行した API キー（未設定なら `DEMO_KEY` で動きますがレート制限が厳しめです） |
 | `ANTHROPIC_API_KEY` | Anthropic コンソールで発行した API キー。**未登録だと日本語要約が生成されず、英語原文がそのまま投稿されます**（DHBR / 薬剤ニュースと共通） |
 | `SLACK_BOT_TOKEN` | Slack Bot の OAuth トークン（`xoxb-...`、DHBR / 薬剤ニュースと共通） |
 
@@ -93,13 +97,15 @@ GitHub の **Actions タブ → APOD Daily → Run workflow** から手動実行
 
 ```bash
 pip install -r scripts/requirements.txt
-export NASA_API_KEY=...
 export ANTHROPIC_API_KEY=sk-ant-...
 export SLACK_BOT_TOKEN=xoxb-...
 python scripts/apod_daily.py
 
 # 投稿済みでも再投稿する
 FORCE_POST=true python scripts/apod_daily.py
+
+# 取得と整形だけ確認する（要約・投稿・状態保存はしない。Slack トークン不要）
+DRY_RUN=1 python scripts/apod_daily.py
 ```
 
 ## Pharmacy News Daily（日刊薬業・PHARMACY NEWSBREAK）

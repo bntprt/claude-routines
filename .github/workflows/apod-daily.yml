@@ -60,7 +60,6 @@ jobs:
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          NASA_API_KEY: ${{ secrets.NASA_API_KEY }}
           FORCE_POST: ${{ inputs.force }}
         run: python scripts/apod_daily.py
 
