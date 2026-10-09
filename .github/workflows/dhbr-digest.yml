@@ -59,22 +59,12 @@ jobs:
             -H "Content-Type: application/json; charset=utf-8" \
             -d "$(printf '{"channel":"C0985BY63KM","text":":warning: DHBR まとめの実行に失敗しました。<%s|実行ログを確認>"}' "$RUN_URL")"
 
-  # 薬剤ニュースを相乗りさせる。GitHub の schedule は丸ごと発火しない日があるが、
-  # この DHBR は cron-job.org から workflow_dispatch で起動されるため影響を受けない。
-  # DHBR の成否にかかわらず動かす（if: always()）。同じ main へ push するので直列にする。
-  pharmacy-news:
-    needs: digest
-    if: always()
-    permissions:
-      contents: write
-    uses: ./.github/workflows/pharmacy-news.yml
-    secrets: inherit
-
   # APOD の取りこぼしを拾う。APOD 本来の投稿は cron-job.org が 14:05 JST に起動する
   # 経路（更新直後に最新版が届く）で、それが失敗した日だけここで翌朝 6:00 JST に
   # 遅れて投稿される。投稿済みなら重複ガードで即終了するので二重投稿はしない。
+  # DHBR の成否にかかわらず動かす（if: always()）。同じ main へ push するので直列にする。
   apod-daily:
-    needs: [digest, pharmacy-news]
+    needs: digest
     if: always()
     permissions:
       contents: write

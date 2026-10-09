@@ -28,8 +28,7 @@ GitHub Actions 上で動くため、**PC やデスクトップアプリが起動
 APOD は**米国東部時間の 0 時ちょうど**に更新されます（日本時間では夏時間 **13:00**、冬時間 **14:00**）。
 
 **GitHub Actions の `schedule` はこのリポジトリでは信頼できません。** 2026-08-27 は 9 回、
-8-28 は 36 回の予定がいずれも 1 度も発火せず、2 日続けて投稿が飛びました。同じ日、
-薬剤ニュースも cron から 3〜7 時間ずれて実行されています。そのため DHBR と同じく
+8-28 は 36 回の予定がいずれも 1 度も発火せず、2 日続けて投稿が飛びました。そのため DHBR と同じく
 **cron-job.org からの `workflow_dispatch` をメイン経路**にしています。
 
 | 経路 | 起動 | 役割 |
@@ -75,13 +74,13 @@ GitHub リポジトリの **Settings → Secrets and variables → Actions** に
 
 | Secret 名 | 説明 |
 |---|---|
-| `ANTHROPIC_API_KEY` | Anthropic コンソールで発行した API キー。**未登録だと日本語要約が生成されず、英語原文がそのまま投稿されます**（DHBR / 薬剤ニュースと共通） |
-| `SLACK_BOT_TOKEN` | Slack Bot の OAuth トークン（`xoxb-...`、DHBR / 薬剤ニュースと共通） |
+| `ANTHROPIC_API_KEY` | Anthropic コンソールで発行した API キー。**未登録だと日本語要約が生成されず、英語原文がそのまま投稿されます**（DHBR と共通） |
+| `SLACK_BOT_TOKEN` | Slack Bot の OAuth トークン（`xoxb-...`、DHBR と共通） |
 
 **このリポジトリは public です。API キーをコード中に直接書かないでください。**
 
 `ANTHROPIC_API_KEY` を使う（＝ Claude API に課金が発生する）のは、このルーティンだけです。
-薬剤ニュースと DHBR のワークフローにはこの Secret を渡していません。
+DHBR のワークフローにはこの Secret を渡していません。
 
 Bot（`claude-hbr`）は `#天文学` チャンネルに参加済みです。
 
@@ -106,80 +105,6 @@ FORCE_POST=true python scripts/apod_daily.py
 
 # 取得と整形だけ確認する（要約・投稿・状態保存はしない。Slack トークン不要）
 DRY_RUN=1 python scripts/apod_daily.py
-```
-
-## Pharmacy News Daily（日刊薬業・PHARMACY NEWSBREAK）
-
-毎朝 6:00 JST に [日刊薬業（nk.jiho.jp）](https://nk.jiho.jp/) と
-[PHARMACY NEWSBREAK（pnb.jiho.jp）](https://pnb.jiho.jp/) の新着記事を**各 3 件**取得し、
-約 200 字に要約して Slack の `#薬剤ニュース` チャンネルへ投稿します。
-GitHub Actions 上で動くため、**PC やデスクトップアプリが起動していなくても実行されます**。
-
-### 動作概要
-
-1. nk.jiho.jp / pnb.jiho.jp のトップページ・新着一覧から記事リンクを収集
-2. `data/pharmacy_seen_articles.json` と照合して未投稿の記事に絞る（重複排除、14 日で失効）
-3. 各サイトから 3 件ずつ選定。**両サイトが同じ話題を報じている場合は片方だけ採用**し、
-   もう片方は次の記事に差し替える（タイトルの文字一致率で判定）
-4. 各記事のリード文を約 200 字ぶん抜粋
-   （**Claude API による要約はあえて使っていません**。両サイトとも有料会員限定記事が多く
-   本文を取得できないため、要約しても品質が出ず課金に見合わないという判断です。
-   ワークフローから `ANTHROPIC_API_KEY` を渡していないので、Secret を登録しても
-   このルーティンは課金されません）
-5. サイトごとにまとめて Slack `#薬剤ニュース` チャンネルへ投稿
-6. 投稿済み URL（同話題スキップ分を含む）を `data/pharmacy_seen_articles.json` に保存して main へコミット
-
-### スケジュール
-
-**メイン経路は DHBR Daily Digest への相乗りです。** DHBR は cron-job.org から
-`workflow_dispatch` で毎朝 6:00 JST に起動されるため、GitHub 側の都合に左右されません。
-`dhbr-digest.yml` の `pharmacy-news` ジョブが `pharmacy-news.yml` を
-`workflow_call` で呼び出し、DHBR の投稿に続けて薬剤ニュースを投稿します。
-DHBR 側が失敗しても薬剤ニュースは実行されます（`if: always()`）。
-
-保険として `pharmacy-news.yml` 自身の `schedule` も残しています。
-
-| cron (UTC) | JST | 役割 |
-|---|---|---|
-| （DHBR 相乗り） | 6:00 | **メイン**（cron-job.org 起動） |
-| `0 21 * * *` | 6:00 | 保険 |
-| `30 21 * * *` | 6:30 | 保険 |
-| `0 23 * * *` | 8:00 | 保険 |
-
-二重投稿は起きません。`data/pharmacy_seen_articles.json` の `last_posted`（JST の日付）を見て、
-**その日すでに投稿済みなら即終了**します。相乗り経路と `schedule` が同時刻に重なっても
-`concurrency: pharmacy-news` で直列化されるため、main への push も競合しません。
-
-> **なぜ相乗りにしたか**: 2026-08-27、GitHub Actions の `schedule` がリポジトリ全体で
-> 11 時間以上まったく発火せず、6:00 / 6:30 / 8:00 の 3 枠すべてが不発になりました
-> （同時刻に `workflow_dispatch` は正常動作）。`schedule` だけに依存しない経路が必要と判断しました。
-
-> **注意**: `schedule` トリガーはデフォルトブランチ（main）のワークフローのみ有効です。
-> このワークフローを main にマージすると稼働を開始します。
-
-### セットアップ
-
-GitHub リポジトリの **Settings → Secrets and variables → Actions** に以下を登録してください
-（DHBR Daily Digest と共通）。
-
-| Secret 名 | 説明 |
-|---|---|
-| `SLACK_BOT_TOKEN` | Slack Bot の OAuth トークン（`xoxb-...`） |
-
-`ANTHROPIC_API_KEY` は使いません（上記のとおり要約を行わないため）。
-
-Bot を `#薬剤ニュース` チャンネルに招待してください（`/invite @your-bot`）。
-
-### 手動実行
-
-GitHub の **Actions タブ → Pharmacy News Daily → Run workflow** から手動実行できます。
-
-### ローカル実行
-
-```bash
-pip install -r scripts/requirements.txt
-export SLACK_BOT_TOKEN=xoxb-...
-python scripts/pharmacy_news.py
 ```
 
 ## DHBR Daily Digest
